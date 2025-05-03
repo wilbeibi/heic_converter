@@ -1,0 +1,11 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "heic-converter"
+version = "0.1.0"
+description = "A simple script to convert HEIC images to another format."
+authors = [{ name = "Hongyi Shen", email = "wilbeibi@gmail.com" }]
+dependencies = ["wand"]
+requires-python = ">=3.8"

@@ -32,6 +32,8 @@ class ConversionResult:
     method: ConversionMethod | None = None
     error: str | None = None
     duration: float = 0.0
+    original_size: int = 0
+    converted_size: int = 0
 
 
 @dataclass
@@ -96,6 +98,8 @@ def convert_image(args: tuple[Path, bool]) -> ConversionResult:
     src_path, remove_original = args
     dst_path = src_path.with_suffix('.heic')
     start_time = time.perf_counter()
+    original_size = src_path.stat().st_size
+    converted_size = 0
     
     # Try Wand first, fallback to subprocess
     converters: list[tuple[ConversionMethod, ImageConverter]] = []
@@ -108,6 +112,7 @@ def convert_image(args: tuple[Path, bool]) -> ConversionResult:
     for method, converter in converters:
         try:
             converter(src_path, dst_path)
+            converted_size = dst_path.stat().st_size
             
             if remove_original:
                 src_path.unlink()
@@ -118,7 +123,9 @@ def convert_image(args: tuple[Path, bool]) -> ConversionResult:
                 src=src_path,
                 dst=dst_path,
                 method=method,
-                duration=duration
+                duration=duration,
+                original_size=original_size,
+                converted_size=converted_size
             )
         except Exception as e:
             last_error = f"{method}: {str(e)}"
@@ -131,7 +138,9 @@ def convert_image(args: tuple[Path, bool]) -> ConversionResult:
         success=False,
         src=src_path,
         error=last_error,
-        duration=duration
+        duration=duration,
+        original_size=0,
+        converted_size=0
     )
 
 
@@ -178,7 +187,16 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def print_summary(stats: ConversionStats, elapsed_time: float) -> None:
+def format_size(size_bytes: float) -> str:
+    """Format file size in human-readable format."""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
+
+def print_summary(stats: ConversionStats, elapsed_time: float, total_size_saved: float) -> None:
     """Print conversion summary and statistics."""
     print("\n" + "=" * 50)
     print("CONVERSION SUMMARY")
@@ -186,6 +204,7 @@ def print_summary(stats: ConversionStats, elapsed_time: float) -> None:
     print(f"Total files: {stats.total}")
     print(f"Successful: {stats.successful} ({stats.success_rate:.1f}%)")
     print(f"Failed: {stats.failed}")
+    print(f"Space saved: {format_size(total_size_saved)}")
     
     if stats.method_counts:
         print("\nMethods used:")
@@ -230,47 +249,60 @@ def main() -> int:
         print("Original files will be removed")
     print(f"Using {args.workers} parallel workers\n")
     
+    # Calculate total size of original files for space-saving summary
+    original_total_size = sum(f.stat().st_size for f in image_files if f.exists())
+
     start_time = time.perf_counter()
     stats = ConversionStats()
-    
-    # Process files in parallel
-    conversion_args = [(file_path, args.remove) for file_path in image_files]
-    
-    with ProcessPoolExecutor(max_workers=args.workers) as executor:
-        future_to_file = {
-            executor.submit(convert_image, arg): arg[0] 
-            for arg in conversion_args
-        }
-        
-        for i, future in enumerate(as_completed(future_to_file), 1):
-            result = future.result()
-            
-            # Update statistics
-            stats = ConversionStats(
-                total=stats.total + 1,
-                successful=stats.successful + (1 if result.success else 0),
-                failed=stats.failed + (0 if result.success else 1),
-                method_counts=stats.method_counts
-            )
-            
-            if result.method:
-                stats.method_counts[result.method] = stats.method_counts.get(result.method, 0) + 1
-            
-            # Display progress
-            status = "✓" if result.success else "✗"
-            method_info = f" ({result.method})" if result.method else ""
-            error_info = f" - {result.error}" if result.error else ""
-            
-            print(f"[{i}/{total_files}] {status} {result.src}{method_info}{error_info}")
-            
-            # Progress bar
-            progress = (i / total_files) * 100
-            print(f"Progress: {progress:.1f}% ({stats.successful} successful, "
-                  f"{stats.failed} failed)", end='\r', flush=True)
-    
-    elapsed_time = time.perf_counter() - start_time
-    print_summary(stats, elapsed_time)
-    
+    total_converted = 0
+    total_size_saved: float = 0.0
+
+    try:
+        # Process files in parallel
+        conversion_args = [(file_path, args.remove) for file_path in image_files]
+
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            future_to_file = {
+                executor.submit(convert_image, arg): arg[0]
+                for arg in conversion_args
+            }
+
+            for i, future in enumerate(as_completed(future_to_file), 1):
+                result = future.result()
+
+                # Update statistics
+                stats = ConversionStats(
+                    total=stats.total + 1,
+                    successful=stats.successful + (1 if result.success else 0),
+                    failed=stats.failed + (0 if result.success else 1),
+                    method_counts=stats.method_counts
+                )
+
+                if result.method:
+                    stats.method_counts[result.method] = stats.method_counts.get(result.method, 0) + 1
+
+                # Display progress
+                status = "✓" if result.success else "✗"
+                method_info = f" ({result.method})" if result.method else ""
+                error_info = f" - {result.error}" if result.error else ""
+
+                print(f"[{i}/{total_files}] {status} {result.src}{method_info}{error_info}")
+
+                # Progress bar
+                progress = (i / total_files) * 100
+                print(f"Progress: {progress:.1f}% ({stats.successful} successful, "
+                      f"{stats.failed} failed)", end='\r', flush=True)
+
+                if result.success:
+                    total_converted += 1
+                    total_size_saved += (result.original_size - result.converted_size)
+
+    except KeyboardInterrupt:
+        print("\n\nConversion interrupted by user")
+    finally:
+        elapsed_time = time.perf_counter() - start_time
+        print_summary(stats, elapsed_time, total_size_saved)
+
     return 0 if stats.failed == 0 else 1
 
 

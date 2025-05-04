@@ -36,4 +36,26 @@ uv run --with wand heic_converter.py /path/to/images --subfolders
 
 # Convert only jpg files and remove originals
 uv run --with wand heic_converter.py . --extensions jpg --remove
+```
+
+## macOS Setup
+
+To use this tool on macOS, you need to install ImageMagick (and freetype) with Homebrew:
+
+```bash
+brew install freetype imagemagick
+```
+
+If you use bash or zsh, you may also need to set the library path so Python can find ImageMagick:
+
+```bash
+export DYLD_LIBRARY_PATH="/opt/homebrew/lib:$DYLD_LIBRARY_PATH"
+```
+
+To make this change permanent, add the appropriate line to your `~/.bashrc` or `~/.zshrc` file.
+
+You can verify ImageMagick is installed with:
+
+```bash
+magick --version
 ``` 
